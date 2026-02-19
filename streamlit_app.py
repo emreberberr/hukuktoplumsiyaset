@@ -25,7 +25,7 @@ COURSE_INFO = {
         "Her hafta en fazla iki sunum yapılabilmektedir. "
         'Kendi konunuzu belirlemek isterseniz ilgili kategorideki "Diğer" seçeneğini işaretleyerek başlığınızı yazabilirsiniz.'
     ),
-    "note": "Önemli Not: Kendi belirlediğiniz konular, dersin hocasının onayından sonra geçerli kabul edilecektir.",
+    "note": "Not: Kayitlar form gonderildiginde otomatik olarak tabloya islenir.",
 }
 
 CATEGORY_LABELS = {
@@ -490,6 +490,9 @@ def show_admin_panel(records):
 
 def main():
     show_header()
+    flash_success = st.session_state.pop("flash_success", "")
+    if flash_success:
+        st.success(flash_success)
 
     try:
         worksheet = get_worksheet()
@@ -583,20 +586,14 @@ def main():
                 final_topic,
                 selected_date,
                 ACTIVE_DATE_LABELS[selected_date],
-                "Evet" if is_custom_topic else "Hayır",
+                "Hayır",
             ]
 
             worksheet.append_row(row, value_input_option="RAW")
             st.session_state["records_cache"] = latest_records + [dict(zip(SHEET_RECORD_KEYS, row))]
             st.session_state["records_cache_at"] = time.time()
 
-            if is_custom_topic:
-                st.success(
-                    "Kaydınız alındı. Özel başlığınız ders hocasının onayından sonra kesinleşecektir."
-                )
-            else:
-                st.success("Kaydınız başarıyla alındı.")
-
+            st.session_state["flash_success"] = "Kayit basarili."
             st.rerun()
 
     st.subheader("Tarih Doluluk Durumu")
