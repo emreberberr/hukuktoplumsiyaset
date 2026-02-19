@@ -87,7 +87,7 @@ BLOCKED_DATES = [
 
 NAME_PATTERN = re.compile(r"^[A-Za-zÇĞİÖŞÜçğıöşü\s.'-]+$")
 
-SHEET_HEADERS = [
+SHEET_RECORD_KEYS = [
     "timestamp",
     "ogrenci_adi_soyadi",
     "kategori_anahtar",
@@ -99,6 +99,80 @@ SHEET_HEADERS = [
     "sunum_tarihi",
     "onay_gerekli",
 ]
+
+LEGACY_SHEET_HEADERS = SHEET_RECORD_KEYS.copy()
+
+SHEET_HEADERS = [
+    "Kayit Zamani",
+    "Ogrenci Adi Soyadi",
+    "Kategori Anahtari",
+    "Kategori",
+    "Listeden Secilen Konu",
+    "Ozel Baslik (Varsa)",
+    "Nihai Odev Basligi",
+    "Sunum Tarihi (ISO)",
+    "Sunum Tarihi",
+    "Onay Gerekli mi?",
+]
+
+ADMIN_COLUMN_NAMES = dict(zip(SHEET_RECORD_KEYS, SHEET_HEADERS))
+
+
+def apply_sheet_presentation(worksheet):
+    sheet_id = worksheet._properties.get("sheetId")
+    if sheet_id is None:
+        return
+
+    requests = [
+        {
+            "updateSheetProperties": {
+                "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 1}},
+                "fields": "gridProperties.frozenRowCount",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
+                "cell": {
+                    "userEnteredFormat": {
+                        "textFormat": {"bold": True},
+                        "backgroundColor": {"red": 0.93, "green": 0.96, "blue": 0.99},
+                    }
+                },
+                "fields": "userEnteredFormat(textFormat,backgroundColor)",
+            }
+        },
+        {
+            "autoResizeDimensions": {
+                "dimensions": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": 0,
+                    "endIndex": 10,
+                }
+            }
+        },
+    ]
+
+    # Teknik alanlar gizlenir; ana okunur alanlar gorunur kalir.
+    technical_columns = [2, 4, 5, 7]
+    for column_index in technical_columns:
+        requests.append(
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "COLUMNS",
+                        "startIndex": column_index,
+                        "endIndex": column_index + 1,
+                    },
+                    "properties": {"hiddenByUser": True},
+                    "fields": "hiddenByUser",
+                }
+            }
+        )
+
+    worksheet.spreadsheet.batch_update({"requests": requests})
 
 
 @st.cache_resource(show_spinner=False)
@@ -125,6 +199,12 @@ def get_worksheet():
     first_row = worksheet.row_values(1)
     if not first_row:
         worksheet.update("A1:J1", [SHEET_HEADERS])
+    elif first_row == LEGACY_SHEET_HEADERS:
+        worksheet.update("A1:J1", [SHEET_HEADERS])
+    try:
+        apply_sheet_presentation(worksheet)
+    except Exception:
+        pass
 
     return worksheet
 
@@ -137,21 +217,21 @@ def get_records(worksheet):
     headers = values[0]
     rows = values[1:]
 
-    if headers != SHEET_HEADERS:
-        normalized = []
+    if headers == SHEET_HEADERS or headers == LEGACY_SHEET_HEADERS:
+        records = []
         for row in rows:
-            padded = row + [""] * max(0, len(SHEET_HEADERS) - len(row))
-            item = {}
-            for index, header in enumerate(SHEET_HEADERS):
-                item[header] = padded[index] if index < len(padded) else ""
-            normalized.append(item)
-        return normalized
+            padded = row + [""] * max(0, len(SHEET_RECORD_KEYS) - len(row))
+            records.append(dict(zip(SHEET_RECORD_KEYS, padded[: len(SHEET_RECORD_KEYS)])))
+        return records
 
-    records = []
+    normalized = []
     for row in rows:
-        padded = row + [""] * (len(SHEET_HEADERS) - len(row))
-        records.append(dict(zip(SHEET_HEADERS, padded)))
-    return records
+        padded = row + [""] * max(0, len(SHEET_RECORD_KEYS) - len(row))
+        item = {}
+        for index, key in enumerate(SHEET_RECORD_KEYS):
+            item[key] = padded[index] if index < len(padded) else ""
+        normalized.append(item)
+    return normalized
 
 
 def calculate_date_counts(records):
@@ -262,7 +342,10 @@ def show_admin_panel(records):
             st.info("Henüz kayıt yok.")
             return
 
-        table = pd.DataFrame(records)
+        table = pd.DataFrame(records).rename(columns=ADMIN_COLUMN_NAMES)
+        ordered_columns = [col for col in SHEET_HEADERS if col in table.columns]
+        if ordered_columns:
+            table = table[ordered_columns]
         st.dataframe(table, use_container_width=True)
 
         csv_data = table.to_csv(index=False).encode("utf-8-sig")
