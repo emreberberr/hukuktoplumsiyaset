@@ -1,16 +1,19 @@
 import re
 from collections import Counter
 from datetime import datetime
+import time
 from zoneinfo import ZoneInfo
 
 import gspread
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="Sunum Konusu ve Tarih Seçimi", layout="centered")
 
 MAX_CAPACITY_PER_DATE = 2
+RECORD_CACHE_TTL_SECONDS = 10
 OTHER_OPTION_LABEL = "Diğer (Lütfen kendi ödev başlığınızı belirtiniz)"
 
 COURSE_INFO = {
@@ -234,6 +237,18 @@ def get_records(worksheet):
     return normalized
 
 
+def get_records_cached(worksheet, force_refresh=False):
+    has_cache = "records_cache" in st.session_state
+    last_fetch = float(st.session_state.get("records_cache_at", 0.0))
+    is_expired = (time.time() - last_fetch) > RECORD_CACHE_TTL_SECONDS
+
+    if force_refresh or (not has_cache) or is_expired:
+        st.session_state["records_cache"] = get_records(worksheet)
+        st.session_state["records_cache_at"] = time.time()
+
+    return st.session_state["records_cache"]
+
+
 def calculate_date_counts(records):
     counter = Counter()
     for record in records:
@@ -280,6 +295,57 @@ def format_topic_option(topic_value):
     if topic_value.startswith("locked::"):
         return f"{topic_value.split('::', 1)[1]} (Alındı)"
     return topic_value
+
+def enforce_locked_topic_options():
+    components.html(
+        """
+        <script>
+        const doc = window.parent.document;
+        const LOCK_HINT = "(Al";
+        const isLocked = (text) => text.includes(LOCK_HINT) && text.includes("nd");
+        const optionSelector = '[role="option"], div[role="listbox"] li';
+
+        const styleLocked = (node) => {
+          node.style.color = "#9aa0a6";
+          node.style.backgroundColor = "#f3f4f6";
+          node.style.cursor = "not-allowed";
+          node.setAttribute("aria-disabled", "true");
+        };
+
+        const markLockedItems = () => {
+          doc.querySelectorAll(optionSelector).forEach((item) => {
+            const label = (item.textContent || "").trim();
+            if (!isLocked(label)) return;
+            styleLocked(item);
+          });
+        };
+
+        const blockLockedSelection = (event) => {
+          const target = event.target && event.target.closest ? event.target.closest(optionSelector) : null;
+          if (!target) return;
+          const label = (target.textContent || "").trim();
+          if (!isLocked(label)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          styleLocked(target);
+        };
+
+        markLockedItems();
+        if (!window.parent.__lockedTopicObserverAttached) {
+          const observer = new MutationObserver(markLockedItems);
+          observer.observe(doc.body, { childList: true, subtree: true });
+          doc.addEventListener("pointerdown", blockLockedSelection, true);
+          doc.addEventListener("click", blockLockedSelection, true);
+          doc.addEventListener("mousedown", blockLockedSelection, true);
+          window.parent.__lockedTopicObserverAttached = true;
+        }
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
 
 
 def validate_form(student_name, category_key, topic, custom_topic, selected_date):
@@ -431,7 +497,7 @@ def main():
         show_setup_error(error)
         return
 
-    records = get_records(worksheet)
+    records = get_records_cached(worksheet)
     count_map = calculate_date_counts(records)
     taken_topics_map = calculate_taken_topics(records)
 
@@ -463,6 +529,8 @@ def main():
         key="topic_select",
         on_change=on_topic_change,
     )
+    if locked_topics:
+        enforce_locked_topic_options()
     topic = decode_topic_value(topic_value)
     if st.session_state.get("topic_locked_message", False):
         st.info("Bu ödev konusu daha önce seçildiği için pasif durumda.")
@@ -489,7 +557,7 @@ def main():
     if submitted:
         errors = validate_form(student_name, category_key, topic, custom_topic, selected_date)
 
-        latest_records = get_records(worksheet)
+        latest_records = get_records_cached(worksheet, force_refresh=True)
         latest_count_map = calculate_date_counts(latest_records)
         latest_taken_topics_map = calculate_taken_topics(latest_records)
         if selected_date and latest_count_map.get(selected_date, 0) >= MAX_CAPACITY_PER_DATE:
@@ -519,6 +587,8 @@ def main():
             ]
 
             worksheet.append_row(row, value_input_option="RAW")
+            st.session_state["records_cache"] = latest_records + [dict(zip(SHEET_RECORD_KEYS, row))]
+            st.session_state["records_cache_at"] = time.time()
 
             if is_custom_topic:
                 st.success(
