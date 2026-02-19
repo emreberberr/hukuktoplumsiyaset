@@ -288,42 +288,40 @@ def main():
     count_map = calculate_date_counts(records)
 
     st.subheader("Sunum Kaydı")
+    student_name = st.text_input("Öğrenci Adı ve Soyadı *", max_chars=120).strip()
 
-    with st.form("submission_form", clear_on_submit=True):
-        student_name = st.text_input("Öğrenci Adı ve Soyadı *", max_chars=120).strip()
+    category_options = [""] + list(CATEGORY_LABELS.keys())
+    category_key = st.selectbox(
+        "Kategori Seçimi *",
+        options=category_options,
+        format_func=lambda x: "Kategori seçiniz" if x == "" else CATEGORY_LABELS[x],
+    )
 
-        category_options = [""] + list(CATEGORY_LABELS.keys())
-        category_key = st.selectbox(
-            "Kategori Seçimi *",
-            options=category_options,
-            format_func=lambda x: "Kategori seçiniz" if x == "" else CATEGORY_LABELS[x],
-        )
+    topic_options = TOPICS_BY_CATEGORY.get(category_key, [])
+    topic = st.selectbox(
+        "Ödev Konusu Seçimi *",
+        options=[""] + topic_options,
+        format_func=lambda x: "Ödev konusu seçiniz" if x == "" else x,
+        disabled=(category_key == ""),
+    )
 
-        topic_options = TOPICS_BY_CATEGORY.get(category_key, [])
-        topic = st.selectbox(
-            "Ödev Konusu Seçimi *",
-            options=[""] + topic_options,
-            format_func=lambda x: "Ödev konusu seçiniz" if x == "" else x,
-            disabled=(category_key == ""),
-        )
+    custom_topic = ""
+    if topic == OTHER_OPTION_LABEL:
+        custom_topic = st.text_input("Özel Ödev Başlığı *", max_chars=250).strip()
 
-        custom_topic = ""
-        if topic == OTHER_OPTION_LABEL:
-            custom_topic = st.text_input("Özel Ödev Başlığı *", max_chars=250).strip()
+    open_dates = [
+        date_item["value"]
+        for date_item in ACTIVE_DATES
+        if count_map.get(date_item["value"], 0) < MAX_CAPACITY_PER_DATE
+    ]
 
-        open_dates = [
-            date_item["value"]
-            for date_item in ACTIVE_DATES
-            if count_map.get(date_item["value"], 0) < MAX_CAPACITY_PER_DATE
-        ]
+    selected_date = st.selectbox(
+        "Sunum Tarihi *",
+        options=[""] + open_dates,
+        format_func=lambda x: "Tarih seçiniz" if x == "" else date_option_label(x, count_map),
+    )
 
-        selected_date = st.selectbox(
-            "Sunum Tarihi *",
-            options=[""] + open_dates,
-            format_func=lambda x: "Tarih seçiniz" if x == "" else date_option_label(x, count_map),
-        )
-
-        submitted = st.form_submit_button("Kaydı Tamamla", use_container_width=True)
+    submitted = st.button("Kaydı Tamamla", use_container_width=True)
 
     if submitted:
         errors = validate_form(student_name, category_key, topic, custom_topic, selected_date)
