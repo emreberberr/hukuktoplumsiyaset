@@ -243,6 +243,45 @@ def calculate_date_counts(records):
     return counter
 
 
+def calculate_taken_topics(records):
+    taken_topics = {key: set() for key in CATEGORY_LABELS}
+    for record in records:
+        category_key = record.get("kategori_anahtar", "")
+        topic = record.get("secilen_konu", "")
+        if category_key in CATEGORY_LABELS and topic and topic != OTHER_OPTION_LABEL:
+            taken_topics.setdefault(category_key, set()).add(topic)
+    return taken_topics
+
+
+def on_category_change():
+    st.session_state["topic_select"] = ""
+    st.session_state["custom_topic_input"] = ""
+    st.session_state["topic_locked_message"] = False
+
+
+def on_topic_change():
+    selected = st.session_state.get("topic_select", "")
+    if isinstance(selected, str) and selected.startswith("locked::"):
+        st.session_state["topic_select"] = ""
+        st.session_state["topic_locked_message"] = True
+
+
+def decode_topic_value(topic_value):
+    if isinstance(topic_value, str) and topic_value.startswith("open::"):
+        return topic_value.split("::", 1)[1]
+    return ""
+
+
+def format_topic_option(topic_value):
+    if topic_value == "":
+        return "Ödev konusu seçiniz"
+    if topic_value.startswith("open::"):
+        return topic_value.split("::", 1)[1]
+    if topic_value.startswith("locked::"):
+        return f"{topic_value.split('::', 1)[1]} (Alındı)"
+    return topic_value
+
+
 def validate_form(student_name, category_key, topic, custom_topic, selected_date):
     errors = []
 
@@ -281,8 +320,39 @@ def date_option_label(date_value, count_map):
 
 def format_availability_table(count_map):
     rows = []
-
+    all_dates = []
     for item in ACTIVE_DATES:
+        all_dates.append(
+            {
+                "value": item["value"],
+                "label": item["label"],
+                "is_blocked": False,
+                "reason": "",
+            }
+        )
+    for item in BLOCKED_DATES:
+        all_dates.append(
+            {
+                "value": item["value"],
+                "label": item["label"],
+                "is_blocked": True,
+                "reason": item["reason"],
+            }
+        )
+
+    all_dates.sort(key=lambda item: item["value"])
+
+    for item in all_dates:
+        if item["is_blocked"]:
+            rows.append(
+                {
+                    "Tarih": item["label"],
+                    "Durum": "Kapalı",
+                    "Detay": item["reason"],
+                }
+            )
+            continue
+
         used = count_map.get(item["value"], 0)
         status = "Dolu" if used >= MAX_CAPACITY_PER_DATE else "Müsait"
         rows.append(
@@ -290,15 +360,6 @@ def format_availability_table(count_map):
                 "Tarih": item["label"],
                 "Durum": status,
                 "Detay": f"{used}/{MAX_CAPACITY_PER_DATE} dolu",
-            }
-        )
-
-    for item in BLOCKED_DATES:
-        rows.append(
-            {
-                "Tarih": item["label"],
-                "Durum": "Kapalı",
-                "Detay": item["reason"],
             }
         )
 
@@ -316,10 +377,13 @@ def show_setup_error(error):
 
 def show_header():
     st.title(COURSE_INFO["course_name"])
-    st.markdown(f"**Hoca:** {COURSE_INFO['lecturer']}")
+    st.markdown(f"**\u00d6\u011fretim \u00dcyesi:** {COURSE_INFO['lecturer']}")
     st.markdown(f"**Kurum:** {COURSE_INFO['institution']}")
     st.write(COURSE_INFO["instruction"])
     st.warning(COURSE_INFO["note"])
+    sheet_id = st.secrets.get("SHEET_ID", "")
+    if sheet_id:
+        st.markdown(f"[Google Sheets kayıt tablosunu aç](https://docs.google.com/spreadsheets/d/{sheet_id})")
 
 
 def show_admin_panel(records):
@@ -369,6 +433,10 @@ def main():
 
     records = get_records(worksheet)
     count_map = calculate_date_counts(records)
+    taken_topics_map = calculate_taken_topics(records)
+
+    if "topic_locked_message" not in st.session_state:
+        st.session_state["topic_locked_message"] = False
 
     st.subheader("Sunum Kaydı")
     student_name = st.text_input("Öğrenci Adı ve Soyadı *", max_chars=120).strip()
@@ -378,19 +446,31 @@ def main():
         "Kategori Seçimi *",
         options=category_options,
         format_func=lambda x: "Kategori seçiniz" if x == "" else CATEGORY_LABELS[x],
+        key="category_select",
+        on_change=on_category_change,
     )
 
     topic_options = TOPICS_BY_CATEGORY.get(category_key, [])
-    topic = st.selectbox(
+    taken_topics = taken_topics_map.get(category_key, set())
+    available_topics = [topic for topic in topic_options if topic not in taken_topics]
+    locked_topics = [topic for topic in topic_options if topic in taken_topics]
+    topic_select_options = [""] + [f"open::{topic}" for topic in available_topics] + [f"locked::{topic}" for topic in locked_topics]
+    topic_value = st.selectbox(
         "Ödev Konusu Seçimi *",
-        options=[""] + topic_options,
-        format_func=lambda x: "Ödev konusu seçiniz" if x == "" else x,
+        options=topic_select_options,
+        format_func=format_topic_option,
         disabled=(category_key == ""),
+        key="topic_select",
+        on_change=on_topic_change,
     )
+    topic = decode_topic_value(topic_value)
+    if st.session_state.get("topic_locked_message", False):
+        st.info("Bu ödev konusu daha önce seçildiği için pasif durumda.")
+        st.session_state["topic_locked_message"] = False
 
     custom_topic = ""
     if topic == OTHER_OPTION_LABEL:
-        custom_topic = st.text_input("Özel Ödev Başlığı *", max_chars=250).strip()
+        custom_topic = st.text_input("Özel Ödev Başlığı *", max_chars=250, key="custom_topic_input").strip()
 
     open_dates = [
         date_item["value"]
@@ -411,8 +491,11 @@ def main():
 
         latest_records = get_records(worksheet)
         latest_count_map = calculate_date_counts(latest_records)
+        latest_taken_topics_map = calculate_taken_topics(latest_records)
         if selected_date and latest_count_map.get(selected_date, 0) >= MAX_CAPACITY_PER_DATE:
             errors.append("Seçtiğiniz tarih dolmuştur. Lütfen farklı bir tarih seçiniz.")
+        if topic and topic != OTHER_OPTION_LABEL and topic in latest_taken_topics_map.get(category_key, set()):
+            errors.append("Seçtiğiniz ödev konusu daha önce alınmıştır. Lütfen farklı bir konu seçiniz.")
 
         if errors:
             for message in errors:
@@ -451,15 +534,6 @@ def main():
     availability_table = format_availability_table(count_map)
     st.dataframe(availability_table, use_container_width=True, hide_index=True)
 
-    st.markdown("**Kapalı tarihler**")
-    for item in BLOCKED_DATES:
-        st.write(f"- {item['label']} ({item['reason']})")
-
-    sheet_id = st.secrets.get("SHEET_ID", "")
-    if sheet_id:
-        st.markdown(
-            f"[Google Sheets kayıt tablosunu aç](https://docs.google.com/spreadsheets/d/{sheet_id})"
-        )
 
     show_admin_panel(records)
 
